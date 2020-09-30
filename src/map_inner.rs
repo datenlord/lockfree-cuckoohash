@@ -33,12 +33,12 @@ struct SlotIndex {
 enum SlotState {
     /// `NullOrKey` means a slot is empty(null) or is occupied by a key-value
     /// pair normally without any other flags.
-    NullOrKey,
+    NullOrKey = 0,
     /// `Reloc` means a slot is being relocated to the other slot.
-    Reloc,
+    Reloc = 1,
     /// `Copied` means a slot is being copied to the new map during resize or
     /// has been copied to the new map.
-    Copied,
+    Copied = 2,
 }
 
 impl SlotState {
