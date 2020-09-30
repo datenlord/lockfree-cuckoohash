@@ -2,6 +2,7 @@ use crossbeam_epoch::Guard;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use utilities::{Cast, OverflowArithmetic};
+
 /// `AtomicPtr` is a pointer which can only be manipulated by
 /// atomic operations.
 #[derive(Debug)]

@@ -14,7 +14,7 @@
     trivial_numeric_casts,
     // unreachable_pub, use clippy::redundant_pub_crate instead
     // unsafe_code, unsafe codes are inevitable here
-    // unstable_features,
+    unstable_features,
     unused_extern_crates,
     unused_import_braces,
     unused_qualifications,
@@ -22,7 +22,7 @@
     variant_size_differences,
 
     // Treat warnings as errors
-    // warnings, TODO: treat all wanings as errors
+    warnings,
 
     clippy::all,
     clippy::restriction,

@@ -1,17 +1,11 @@
-#![allow(clippy::indexing_slicing)] // indexing will never panic here, because all of the index has been mod by the length of the vector.
-
-use std::collections::hash_map::RandomState;
-
-use utilities::{Cast, OverflowArithmetic};
-
-use std::hash::{BuildHasher, Hash, Hasher};
-
-use std::sync::atomic::{AtomicUsize, Ordering};
+#![allow(clippy::indexing_slicing)] // TODO: use safe method for indexing and remove this line.
 
 use super::pointer::{AtomicPtr, SharedPtr};
-
-// Re-export `crossbeam_epoch::pin()` and `crossbeam_epoch::Guard`.
-pub use crossbeam_epoch::{pin, Guard};
+use crossbeam_epoch::{pin, Guard};
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use utilities::{Cast, OverflowArithmetic};
 
 /// `KVPair` contains the key-value pair.
 #[derive(Debug)]
