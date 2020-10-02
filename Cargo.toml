@@ -1,0 +1,20 @@
+[package]
+name = "lockfree-cuckoohash"
+version = "0.1.0"
+authors = ["Mingcong Han <hanmingcong123@hotmail.com>"]
+edition = "2018"
+description = "A rust implementation of lockfree cuckoo hashmap"
+license = "MIT"
+repository = "https://github.com/datenlord/lockfree-cuckoohash"
+readme = "README.md"
+keywords = ["lockfree", "non-blocking", "cuckoo", "hashmap", "hashtable"]
+categories = ["data-structures"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crossbeam-epoch = "0.8.2"
+utilities = {git = "https://github.com/datenlord/utilities"}
+
+[dev-dependencies]
+rand = "0.7"
+num_cpus = "1.13.0"
