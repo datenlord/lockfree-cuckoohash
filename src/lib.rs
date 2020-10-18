@@ -41,7 +41,6 @@ mod pointer;
 /// `map_inner` defines the inner implementation of the hashmap.
 mod map_inner;
 
-use map_inner::{KVPair, MapInner};
 use pointer::{AtomicPtr, SharedPtr};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -77,7 +76,7 @@ where
     K: Eq + Hash,
 {
     /// The inner map will be replaced after resize.
-    map: AtomicPtr<MapInner<K, V>>,
+    map: AtomicPtr<map_inner::MapInner<K, V>>,
 }
 
 impl<K, V> std::fmt::Debug for LockFreeCuckooHash<K, V>
@@ -135,7 +134,7 @@ where
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            map: AtomicPtr::new(MapInner::with_capacity(
+            map: AtomicPtr::new(map_inner::MapInner::with_capacity(
                 capacity,
                 [RandomState::new(), RandomState::new()],
             )),
@@ -170,21 +169,20 @@ where
     /// ```
     ///
     #[inline]
-    pub fn get<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<&'guard V> 
+    pub fn get<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<&'guard V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        self
-            .load_inner(guard)
+        self.load_inner(guard)
             .search(key, guard)
             .map(|pair| &pair.value)
     }
 
     /// Returns the key-value pair corresponding to the supplied key.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
     /// let map = LockFreeCuckooHash::new();
@@ -193,21 +191,24 @@ where
     /// let v = map.get_key_value(&1, &guard);
     /// assert_eq!(v, Some((&1, &"a")));
     /// ```
-    /// 
+    ///
     #[inline]
-    pub fn get_key_value<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<(&'guard K, &'guard V)> 
+    pub fn get_key_value<Q: ?Sized>(
+        &self,
+        key: &Q,
+        guard: &'guard Guard,
+    ) -> Option<(&'guard K, &'guard V)>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        self
-            .load_inner(guard)
+        self.load_inner(guard)
             .search(key, guard)
             .map(|pair| (&pair.key, &pair.value))
     }
 
     /// Returns `true` if the map contains a value for the specified key.
-    /// 
+    ///
     /// # Example
     /// ```
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
@@ -216,7 +217,7 @@ where
     /// assert_eq!(map.contains_key(&1), true);
     /// assert_eq!(map.contains_key(&2), false);
     /// ```
-    /// 
+    ///
     #[inline]
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
     where
@@ -227,31 +228,30 @@ where
         self.get_key_value(key, &guard).is_some()
     }
 
-    /// Insert a new key-value pair into the hashtable. If the key has already been in the
-    /// table, the value will be overridden.
+    /// Insert a new key-value pair into the map.
+    /// If the map did not have this key present, `false` is returned.
+    /// If the map did have this key present, the value is updated, and `true` is returned.
+    /// If you want to get the replaced value, try `insert_with_guard` instead.
     ///
     /// # Example:
     ///
     /// ```
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
     /// let map = LockFreeCuckooHash::new();
-    /// map.insert(10, 10);
-    /// let guard = pin();
-    /// let v1 = map.get(&10, &guard);
-    /// assert_eq!(*v1.unwrap(), 10);
-    /// map.insert(10, 20);
-    /// let v2 = map.get(&10, &guard);
-    /// assert_eq!(*v2.unwrap(), 20);
+    /// assert_eq!(map.insert(1, "a"), false);
+    /// assert_eq!(map.insert(2, "b"), false);
+    /// assert_eq!(map.insert(1, "aaa"), true);
     /// ```
     ///
     #[inline]
-    pub fn insert(&self, key: K, value: V) {
+    pub fn insert(&self, key: K, value: V) -> bool {
         let guard = pin();
-        self.insert_with_guard(key, value, &guard)
+        self.insert_with_guard(key, value, &guard).is_some()
     }
 
-    /// Insert a new key-value pair into the hashtable. If the key has already been in the
-    /// table, the value will be overridden.
+    /// Insert a new key-value pair into the map.
+    /// If the map did not have this key present, `None` is returned.
+    /// If the map did have this key present, the value is updated, and the reference to the old value is returned.
     /// Different from `insert(k, v)`, this method requires a user provided guard.
     ///
     /// # Example:
@@ -260,45 +260,46 @@ where
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
     /// let map = LockFreeCuckooHash::new();
     /// let guard = pin();
-    /// map.insert_with_guard(10, 10, &guard);
-    /// let v1 = map.get(&10, &guard);
-    /// assert_eq!(*v1.unwrap(), 10);
-    /// map.insert_with_guard(10, 20, &guard);
-    /// let v2 = map.get(&10, &guard);
-    /// assert_eq!(*v2.unwrap(), 20);
+    /// assert_eq!(map.insert_with_guard(1, "a", &guard), None);
+    /// assert_eq!(map.insert_with_guard(2, "b", &guard), None);
+    /// assert_eq!(map.insert_with_guard(1, "abc", &guard), Some(&"a"));
     /// ```
     ///
     #[inline]
-    pub fn insert_with_guard(&self, key: K, value: V, guard: &'guard Guard) {
-        let kvpair = SharedPtr::from_box(Box::new(KVPair { key, value }));
+    pub fn insert_with_guard(&self, key: K, value: V, guard: &'guard Guard) -> Option<&'guard V> {
+        let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair { key, value }));
         loop {
-            if !self.load_inner(guard).insert(kvpair, &self.map, guard) {
+            match self.load_inner(guard).insert(kvpair, &self.map, guard) {
                 // If `insert` returns false it means the hashmap has been
                 // resized, we need to try to insert the kvpair again.
-                continue;
+                map_inner::WriteResult::Retry => continue,
+                map_inner::WriteResult::Succ(result) => return result.map(|pair| &pair.value),
             }
-            return;
         }
     }
 
-    /// Remove a key from the map.
+    /// Removes a key from the map, returning `true` if the key was previously in the map.
+    /// If you want to get the old value, try `map.remove_with_guard()` instead.
     ///
     /// # Example:
     ///
     /// ```
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
     /// let map = LockFreeCuckooHash::new();
-    /// let guard = pin();
-    /// map.insert(10, 20);
-    /// map.remove(&10);
-    /// let value = map.get(&10, &guard);
-    /// assert_eq!(value.is_none(), true);
+    /// map.insert(1, "a");
+    /// assert_eq!(map.remove(&2), false);
+    /// assert_eq!(map.remove(&1), true);
+    /// assert_eq!(map.remove(&1), false);
     /// ```
     ///
     #[inline]
-    pub fn remove(&self, key: &K) -> bool {
+    pub fn remove<Q: ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         let guard = pin();
-        self.remove_with_guard(key, &guard)
+        self.remove_with_guard(key, &guard).is_some()
     }
 
     /// Remove a key from the map.
@@ -310,25 +311,29 @@ where
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
     /// let map = LockFreeCuckooHash::new();
     /// let guard = pin();
-    /// map.insert(10, 20);
-    /// map.remove_with_guard(&10, &guard);
-    /// let value = map.get(&10, &guard);
-    /// assert_eq!(value.is_none(), true);
+    /// map.insert(1, "a");
+    /// assert_eq!(map.remove_with_guard(&2, &guard), None);
+    /// assert_eq!(map.remove_with_guard(&1, &guard), Some(&"a"));
+    /// assert_eq!(map.remove_with_guard(&1, &guard), None);
     /// ```
     ///
     #[inline]
-    pub fn remove_with_guard(&self, key: &K, guard: &'guard Guard) -> bool {
+    pub fn remove_with_guard<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<&'guard V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         loop {
-            let (succ, exists) = self.load_inner(guard).remove(key, &self.map, guard);
-            if succ {
-                return exists;
+            match self.load_inner(guard).remove(key, &self.map, guard) {
+                map_inner::WriteResult::Retry => continue,
+                map_inner::WriteResult::Succ(old) => return old.map(|pair| &pair.value),
             }
         }
     }
 
     /// `load_inner` atomically loads the `MapInner` of hashmap.
     #[allow(clippy::unwrap_used)]
-    fn load_inner(&self, guard: &'guard Guard) -> &'guard MapInner<K, V> {
+    fn load_inner(&self, guard: &'guard Guard) -> &'guard map_inner::MapInner<K, V> {
         let raw = self.map.load(Ordering::SeqCst, guard).as_raw();
         // map is always not null, so the unsafe code is safe here.
         unsafe { raw.as_ref().unwrap() }
