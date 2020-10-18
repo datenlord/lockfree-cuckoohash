@@ -42,14 +42,11 @@ mod pointer;
 mod map_inner;
 
 use map_inner::{KVPair, MapInner};
-
-use std::collections::hash_map::RandomState;
-
-use std::hash::Hash;
-
-use std::sync::atomic::Ordering;
-
 use pointer::{AtomicPtr, SharedPtr};
+use std::borrow::Borrow;
+use std::collections::hash_map::RandomState;
+use std::hash::Hash;
+use std::sync::atomic::Ordering;
 
 // Re-export `crossbeam_epoch::pin()` and `crossbeam_epoch::Guard`.
 pub use crossbeam_epoch::{pin, Guard};
@@ -166,15 +163,68 @@ where
     /// ```
     /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
     /// let map = LockFreeCuckooHash::new();
-    /// map.insert(10, 10);
+    /// map.insert(1, "a");
     /// let guard = pin();
-    /// let v = map.search_with_guard(&10, &guard);
-    /// assert_eq!(*v.unwrap(), 10);
+    /// let v = map.get(&1, &guard);
+    /// assert_eq!(v, Some(&"a"));
     /// ```
     ///
     #[inline]
-    pub fn search_with_guard(&self, key: &K, guard: &'guard Guard) -> Option<&'guard V> {
-        self.load_inner(guard).search(key, guard)
+    pub fn get<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<&'guard V> 
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self
+            .load_inner(guard)
+            .search(key, guard)
+            .map(|pair| &pair.value)
+    }
+
+    /// Returns the key-value pair corresponding to the supplied key.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// map.insert(1, "a");
+    /// let guard = pin();
+    /// let v = map.get_key_value(&1, &guard);
+    /// assert_eq!(v, Some((&1, &"a")));
+    /// ```
+    /// 
+    #[inline]
+    pub fn get_key_value<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<(&'guard K, &'guard V)> 
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self
+            .load_inner(guard)
+            .search(key, guard)
+            .map(|pair| (&pair.key, &pair.value))
+    }
+
+    /// Returns `true` if the map contains a value for the specified key.
+    /// 
+    /// # Example
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// map.insert(1, "a");
+    /// assert_eq!(map.contains_key(&1), true);
+    /// assert_eq!(map.contains_key(&2), false);
+    /// ```
+    /// 
+    #[inline]
+    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let guard = pin();
+        self.get_key_value(key, &guard).is_some()
     }
 
     /// Insert a new key-value pair into the hashtable. If the key has already been in the
@@ -187,10 +237,10 @@ where
     /// let map = LockFreeCuckooHash::new();
     /// map.insert(10, 10);
     /// let guard = pin();
-    /// let v1 = map.search_with_guard(&10, &guard);
+    /// let v1 = map.get(&10, &guard);
     /// assert_eq!(*v1.unwrap(), 10);
     /// map.insert(10, 20);
-    /// let v2 = map.search_with_guard(&10, &guard);
+    /// let v2 = map.get(&10, &guard);
     /// assert_eq!(*v2.unwrap(), 20);
     /// ```
     ///
@@ -211,10 +261,10 @@ where
     /// let map = LockFreeCuckooHash::new();
     /// let guard = pin();
     /// map.insert_with_guard(10, 10, &guard);
-    /// let v1 = map.search_with_guard(&10, &guard);
+    /// let v1 = map.get(&10, &guard);
     /// assert_eq!(*v1.unwrap(), 10);
     /// map.insert_with_guard(10, 20, &guard);
-    /// let v2 = map.search_with_guard(&10, &guard);
+    /// let v2 = map.get(&10, &guard);
     /// assert_eq!(*v2.unwrap(), 20);
     /// ```
     ///
@@ -241,7 +291,7 @@ where
     /// let guard = pin();
     /// map.insert(10, 20);
     /// map.remove(&10);
-    /// let value = map.search_with_guard(&10, &guard);
+    /// let value = map.get(&10, &guard);
     /// assert_eq!(value.is_none(), true);
     /// ```
     ///
@@ -262,7 +312,7 @@ where
     /// let guard = pin();
     /// map.insert(10, 20);
     /// map.remove_with_guard(&10, &guard);
-    /// let value = map.search_with_guard(&10, &guard);
+    /// let value = map.get(&10, &guard);
     /// assert_eq!(value.is_none(), true);
     /// ```
     ///
@@ -296,7 +346,7 @@ mod tests {
         let value: u32 = 2;
         hashtable.insert(key, value);
         let guard = pin();
-        let ret = hashtable.search_with_guard(&key, &guard);
+        let ret = hashtable.get(&key, &guard);
         assert!(ret.is_some());
         assert_eq!(*(ret.unwrap()), value);
     }
@@ -308,13 +358,13 @@ mod tests {
         let value0: u32 = 2;
         hashtable.insert(key, value0);
         let guard = pin();
-        let ret0 = hashtable.search_with_guard(&key, &guard);
+        let ret0 = hashtable.get(&key, &guard);
         assert!(ret0.is_some());
         assert_eq!(*(ret0.unwrap()), value0);
         assert_eq!(hashtable.size(), 1);
         let value1: u32 = 3;
         hashtable.insert(key, value1);
-        let ret1 = hashtable.search_with_guard(&key, &guard);
+        let ret1 = hashtable.get(&key, &guard);
         assert!(ret1.is_some());
         assert_eq!(*(ret1.unwrap()), value1);
         assert_eq!(hashtable.size(), 1);

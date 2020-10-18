@@ -35,7 +35,7 @@ fn test_single_thread() {
     assert_eq!(base_map.len(), cuckoo_map.size());
 
     for (key, value) in base_map {
-        let value2 = cuckoo_map.search_with_guard(&key, &guard);
+        let value2 = cuckoo_map.get(&key, &guard);
         assert_eq!(value, *value2.unwrap());
     }
 }
@@ -65,7 +65,7 @@ fn test_single_thread_resize() {
     assert_eq!(base_map.len(), cuckoo_map.size());
     assert_eq!(cuckoo_map.size(), size);
     for (key, value) in base_map {
-        let value2 = cuckoo_map.search_with_guard(&key, &guard);
+        let value2 = cuckoo_map.get(&key, &guard);
         assert_eq!(value, *value2.unwrap());
     }
 }
@@ -129,7 +129,7 @@ fn test_multi_thread() {
                 for _ in 0..5 {
                     let rnd_idx: usize = rng.gen_range(0, warmup_entries.len());
                     let warmup_entry = &warmup_entries[rnd_idx];
-                    let res = cuckoo_map.search_with_guard(&warmup_entry.0, &guard);
+                    let res = cuckoo_map.get(&warmup_entry.0, &guard);
                     assert_eq!(res.is_some(), true);
                     assert_eq!(*res.unwrap(), warmup_entry.1);
                 }
@@ -146,7 +146,7 @@ fn test_multi_thread() {
     }
 
     for (k, v) in base_map {
-        let v2 = cuckoo_map.search_with_guard(&k, &guard);
+        let v2 = cuckoo_map.get(&k, &guard);
         assert_eq!(v, *v2.unwrap());
     }
 }
@@ -194,7 +194,7 @@ fn test_multi_thread_resize() {
     let guard = pin();
     assert_eq!(base_map.len(), cuckoo_map.size());
     for (k, v) in base_map {
-        let v2 = cuckoo_map.search_with_guard(&k, &guard);
+        let v2 = cuckoo_map.get(&k, &guard);
         assert!(v2.is_some());
         assert_eq!(v, *v2.unwrap());
     }

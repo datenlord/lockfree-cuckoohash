@@ -2,7 +2,7 @@
 
 use super::pointer::{AtomicPtr, SharedPtr};
 use crossbeam_epoch::{pin, Guard};
-use std::collections::hash_map::RandomState;
+use std::{borrow::Borrow, collections::hash_map::RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use utilities::{Cast, OverflowArithmetic};
@@ -165,12 +165,13 @@ where
     }
 
     /// `search` searches the value corresponding to the key.
-    pub fn search(&self, key: &K, guard: &'guard Guard) -> Option<&'guard V> {
-        // TODO: K could be a Borrowed.
-        let slot_idx0 = self.get_index(0, key);
+    pub fn search<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<&'guard KVPair<K, V>> 
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         // TODO: the second hash value could be lazily evaluated.
-        let slot_idx1 = self.get_index(1, key);
-
+        let slot_idx = vec![self.get_index(0, key), self.get_index(1, key)];
         // Because other concurrent `insert` operations may relocate the key during
         // our `search` here, we may miss the key with one-round query.
         // For example, suppose the key is located in `table[1][hash1(key)]` at first:
@@ -189,38 +190,18 @@ where
         // The other technique to deal with it is a logic-clock based counter -- `relocation count`.
         // Each slot contains a counter that records the number of relocations at the slot.
         loop {
-            // The first round:
-            let (count0_0, entry0, _) = self.get_entry(slot_idx0, guard);
-            if let Some(pair) = entry0 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
+            let mut counters = Vec::with_capacity(4);
+            for i in 0_usize..4 {
+                let (counter, entry, _) = self.get_entry(slot_idx[i.overflowing_rem(2).0], guard);
+                if let Some(pair) = entry {
+                    if key.eq(pair.key.borrow()) {
+                        return entry;
+                    }
                 }
+                counters.push(counter);
             }
-
-            let (count0_1, entry1, _) = self.get_entry(slot_idx1, guard);
-            if let Some(pair) = entry1 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
-                }
-            }
-
-            // The second round:
-            let (count1_0, entry0, _) = self.get_entry(slot_idx0, guard);
-            if let Some(pair) = entry0 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
-                }
-            }
-
-            let (count1_1, entry1, _) = self.get_entry(slot_idx1, guard);
-            if let Some(pair) = entry1 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
-                }
-            }
-
             // Check the counter.
-            if Self::check_counter(count0_0, count0_1, count1_0, count1_1) {
+            if Self::check_counter(counters[0], counters[1], counters[2], counters[3]) {
                 continue;
             }
             break;
@@ -1110,7 +1091,7 @@ where
     }
 
     /// `get_index` hashes the key and return the slot index.
-    fn get_index(&self, tbl_idx: usize, key: &K) -> SlotIndex {
+    fn get_index<Q: Hash + ?Sized>(&self, tbl_idx: usize, key: &Q) -> SlotIndex {
         let mut hasher = self.hash_builders[tbl_idx].build_hasher();
         key.hash(&mut hasher);
         let hash_value = hasher.finish().cast::<usize>();

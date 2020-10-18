@@ -17,11 +17,11 @@ fn simple_read_write_example() {
     // is always valid. In other words, other threads cannot destroy
     // `value` until all of the `guard`s are unpinned.
     let guard = pin();
-    let result = hashtable.search_with_guard(&key, &guard);
+    let result = hashtable.get(&key, &guard);
     assert!(result.is_some());
     assert_eq!(*result.unwrap(), value);
 
-    let none_exist = hashtable.search_with_guard(&2, &guard);
+    let none_exist = hashtable.get(&2, &guard);
     assert!(none_exist.is_none());
 
     // Remove a key-value pair.
@@ -59,7 +59,7 @@ fn multi_threads_read_write() {
         for j in 0..100 {
             let key = i * 100 + j;
             let value = i;
-            let ret = hashtable.search_with_guard(&key, &guard);
+            let ret = hashtable.get(&key, &guard);
             assert!(ret.is_some());
             assert_eq!(*ret.unwrap(), value);
         }

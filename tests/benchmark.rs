@@ -61,7 +61,7 @@ fn bench(
                 // 2. read num_read_per_write kv pairs
                 for _ in 0..num_read_per_write {
                     let key_idx: usize = rng.gen::<usize>() % (i + 1);
-                    map.search_with_guard(&insert_entries[key_idx].0, guard);
+                    map.get(&insert_entries[key_idx].0, guard);
                 }
 
                 // 3. remove num_remove_per_write kv pairs
