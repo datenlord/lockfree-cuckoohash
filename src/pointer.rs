@@ -26,10 +26,11 @@ impl<T> AtomicPtr<T> {
     }
 
     /// `new` creates the `value` on heap and returns its `AtomicPtr`.
+    #[allow(clippy::as_conversions)]
     pub fn new(value: T) -> Self {
         let b = Box::new(value);
         let raw_ptr = Box::into_raw(b);
-        unsafe { Self::from_usize(std::mem::transmute::<*const T, usize>(raw_ptr)) }
+        Self::from_usize(raw_ptr as usize)
     }
 
     /// `null` returns a `AtomicPtr` with a null pointer.
@@ -98,8 +99,9 @@ impl<T> SharedPtr<'_, T> {
     }
 
     /// `from_raw` creates a `SharedPtr` from a raw pointer.
+    #[allow(clippy::as_conversions)]
     pub fn from_raw(raw: *const T) -> Self {
-        unsafe { Self::from_usize(std::mem::transmute::<*const T, usize>(raw)) }
+        Self::from_usize(raw as usize)
     }
 
     /// `null` returns a null `SharedPtr`.

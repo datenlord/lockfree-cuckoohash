@@ -3,7 +3,7 @@ on: [push, pull_request]
 name: CI
 
 env:
-  CI_RUST_TOOLCHAIN: 1.46.0
+  CI_RUST_TOOLCHAIN: 1.47.0
 
 jobs:
   check:
