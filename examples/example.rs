@@ -25,7 +25,6 @@ fn simple_read_write_example() {
     assert_eq!(map.get(&key, &guard), Some(&value));
     assert_eq!(map.get(&2, &guard), None);
 
-
     // Remove a key-value pair.
     // `remove` returns `false` if the map does not have the key.
     assert_eq!(map.remove(&2), false);
