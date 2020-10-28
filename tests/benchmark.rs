@@ -1,5 +1,4 @@
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
-use num_cpus;
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Instant;

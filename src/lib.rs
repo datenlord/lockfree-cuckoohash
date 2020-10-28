@@ -32,6 +32,8 @@
 )]
 #![allow(
     // Some explicitly allowed Clippy lints, must have clear reason to allow
+    clippy::blanket_clippy_restriction_lints, // allow clippy::restriction
+    clippy::panic, // allow debug_assert, panic in production code
     clippy::implicit_return, // actually omitting the return keyword is idiomatic Rust code
 )]
 
