@@ -2,9 +2,9 @@
 
 use super::pointer::{AtomicPtr, SharedPtr};
 use crossbeam_epoch::{pin, Guard};
-use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{borrow::Borrow, collections::hash_map::RandomState};
 use utilities::{Cast, OverflowArithmetic};
 
 /// `KVPair` contains the key-value pair.
@@ -57,6 +57,16 @@ impl SlotState {
             _ => panic!("Invalid slot state from u8: {}", state),
         }
     }
+}
+
+/// `WriteResult` is the returned type of the method `MapInner.insert()` and `MapInner.remove()`.
+pub enum WriteResult<'guard, K, V> {
+    /// The write operation succeeds, returns `Some(KVPair)` if the map had the key present,
+    /// otherwise returns `None` if the map does not have that key.
+    Succ(Option<&'guard KVPair<K, V>>),
+    /// The write operation might fail because the hashmap has been resized by other writers,
+    /// so the caller need to retry the insert again.
+    Retry,
 }
 
 /// `FindResult` is the returned type of the method `MapInner.find()`.
@@ -165,12 +175,13 @@ where
     }
 
     /// `search` searches the value corresponding to the key.
-    pub fn search(&self, key: &K, guard: &'guard Guard) -> Option<&'guard V> {
-        // TODO: K could be a Borrowed.
-        let slot_idx0 = self.get_index(0, key);
+    pub fn search<Q: ?Sized>(&self, key: &Q, guard: &'guard Guard) -> Option<&'guard KVPair<K, V>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         // TODO: the second hash value could be lazily evaluated.
-        let slot_idx1 = self.get_index(1, key);
-
+        let slot_idx = vec![self.get_index(0, key), self.get_index(1, key)];
         // Because other concurrent `insert` operations may relocate the key during
         // our `search` here, we may miss the key with one-round query.
         // For example, suppose the key is located in `table[1][hash1(key)]` at first:
@@ -189,38 +200,18 @@ where
         // The other technique to deal with it is a logic-clock based counter -- `relocation count`.
         // Each slot contains a counter that records the number of relocations at the slot.
         loop {
-            // The first round:
-            let (count0_0, entry0, _) = self.get_entry(slot_idx0, guard);
-            if let Some(pair) = entry0 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
+            let mut counters = Vec::with_capacity(4);
+            for i in 0_usize..4 {
+                let (counter, entry, _) = self.get_entry(slot_idx[i.overflowing_rem(2).0], guard);
+                if let Some(pair) = entry {
+                    if key.eq(pair.key.borrow()) {
+                        return entry;
+                    }
                 }
+                counters.push(counter);
             }
-
-            let (count0_1, entry1, _) = self.get_entry(slot_idx1, guard);
-            if let Some(pair) = entry1 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
-                }
-            }
-
-            // The second round:
-            let (count1_0, entry0, _) = self.get_entry(slot_idx0, guard);
-            if let Some(pair) = entry0 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
-                }
-            }
-
-            let (count1_1, entry1, _) = self.get_entry(slot_idx1, guard);
-            if let Some(pair) = entry1 {
-                if pair.key.eq(key) {
-                    return Some(&pair.value);
-                }
-            }
-
             // Check the counter.
-            if Self::check_counter(count0_0, count0_1, count1_0, count1_1) {
+            if Self::check_counter(counters[0], counters[1], counters[2], counters[3]) {
                 continue;
             }
             break;
@@ -231,20 +222,20 @@ where
     /// Insert a new key-value pair into the hashtable. If the key has already been in the
     /// table, the value will be overridden.
     /// If the insert operation fails because of the map has been resized, this method returns
-    /// false, and the caller need to retry. Otherwise, return true.
+    /// `WriteResult::Retry`, and the caller need to retry.
     pub fn insert(
         &self,
         kvpair: SharedPtr<'guard, KVPair<K, V>>,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
-    ) -> bool {
+    ) -> WriteResult<'guard, K, V> {
         let mut new_slot = kvpair;
         let (_, new_entry, _) = Self::unwrap_slot(new_slot);
         // new_entry is just created from `key`, so the unwrap() is safe here.
         let new_key = if let Some(pair) = new_entry {
             &pair.key
         } else {
-            return true;
+            return WriteResult::Retry;
         };
         let slot_idx0 = self.get_index(0, new_key);
         let slot_idx1 = self.get_index(1, new_key);
@@ -252,7 +243,7 @@ where
             let find_result = self.find(new_key, slot_idx0, slot_idx1, outer_map, guard);
             let (tbl_idx, slot0, slot1) = match find_result {
                 Some(r) => (r.tbl_idx, r.slot0, r.slot1),
-                None => return false,
+                None => return WriteResult::Retry,
             };
             let (slot_idx, target_slot, is_replcace) = match tbl_idx {
                 Some(tbl_idx) => {
@@ -292,11 +283,12 @@ where
                     Ok(old_slot) => {
                         if !is_replcace {
                             self.size.fetch_add(1, Ordering::SeqCst);
+                            return WriteResult::Succ(None);
                         }
                         if old_slot.as_raw() != new_slot.as_raw() {
                             Self::defer_drop_ifneed(old_slot, guard);
                         }
-                        return true;
+                        return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
                     }
                     Err(err) => {
                         new_slot = err.1; // the snapshot is not valid, try again.
@@ -309,10 +301,10 @@ where
                     RelocateResult::Succ => continue,
                     RelocateResult::NeedResize => {
                         self.resize(outer_map, guard);
-                        return false;
+                        return WriteResult::Retry;
                     }
                     RelocateResult::Resized => {
-                        return false;
+                        return WriteResult::Retry;
                     }
                 }
             }
@@ -320,16 +312,19 @@ where
     }
 
     /// Remove a key from the map.
-    /// This method returns two bool value:
-    /// 1. whether the remove operation succeeds. If it is not, it means a resize operation just happened, and
-    ///    the caller should try again with the new resized `MapInner`.
-    /// 2. if the first value is true, the second means whether the key exists.
-    pub fn remove(
+    /// If the remove operation fails because of the map has been resized, this method returns
+    /// `WriteResult::Retry`, and the caller need to retry. Otherwise, it will return the removed
+    /// value if the key exists, or `None` if not.
+    pub fn remove<Q: ?Sized>(
         &self,
-        key: &K,
+        key: &Q,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
-    ) -> (bool, bool) {
+    ) -> WriteResult<'guard, K, V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
         // TODO: we can return the removed value.
         let slot_idx0 = self.get_index(0, key);
         let slot_idx1 = self.get_index(1, key);
@@ -338,11 +333,11 @@ where
             let find_result = self.find(key, slot_idx0, slot_idx1, outer_map, guard);
             let (tbl_idx, slot0, slot1) = match find_result {
                 Some(r) => (r.tbl_idx, r.slot0, r.slot1),
-                None => return (false, false),
+                None => return WriteResult::Retry,
             };
             let tbl_idx = match tbl_idx {
                 Some(idx) => idx,
-                None => return (true, false), // The key does not exist.
+                None => return WriteResult::Succ(None), // The key does not exist.
             };
             if tbl_idx == 0 {
                 Self::set_rlcount(new_slot, Self::get_rlcount(slot0), guard);
@@ -355,7 +350,7 @@ where
                     Ok(old_slot) => {
                         self.size.fetch_sub(1, Ordering::SeqCst);
                         Self::defer_drop_ifneed(old_slot, guard);
-                        return (true, true);
+                        return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
                     }
                     Err(_) => continue,
                 }
@@ -377,7 +372,7 @@ where
                     Ok(old_slot) => {
                         self.size.fetch_sub(1, Ordering::SeqCst);
                         Self::defer_drop_ifneed(old_slot, guard);
-                        return (true, true);
+                        return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
                     }
                     Err(_) => continue,
                 }
@@ -395,14 +390,18 @@ where
     ///     a> the table index of the slot that has the same key.
     ///     b> the first slot.
     ///     c> the second slot.
-    fn find(
+    fn find<Q: ?Sized>(
         &self,
-        key: &K,
+        key: &Q,
         slot_idx0: SlotIndex,
         slot_idx1: SlotIndex,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
-    ) -> Option<FindResult<'guard, K, V>> {
+    ) -> Option<FindResult<'guard, K, V>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
         loop {
             // Similar to `search`, `find` also uses a two-round search protocol.
             // If either of the two rounds finds a slot that contains the key, this method
@@ -469,14 +468,18 @@ where
     /// 1. The find result, including the index of the slot which contains the key, and both slots of the key.
     /// 2. Whether we successfully help a relocation.
     /// 3. Whether the map has been resized.
-    fn try_find(
+    fn try_find<Q: ?Sized>(
         &self,
-        key: &K,
+        key: &Q,
         slot_idx0: SlotIndex,
         slot_idx1: SlotIndex,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
-    ) -> (FindResult<'guard, K, V>, bool, bool) {
+    ) -> (FindResult<'guard, K, V>, bool, bool)
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
         let mut result = FindResult {
             tbl_idx: None,
             slot0: SharedPtr::null(),
@@ -506,7 +509,7 @@ where
             SlotState::NullOrKey => {
                 // There is not special flag on the slot, so we compare the keys.
                 if let Some(pair) = entry0 {
-                    if pair.key.eq(key) {
+                    if key.eq(pair.key.borrow()) {
                         result.tbl_idx = Some(0);
                         // We successfully match the searched key, but we cannot return here,
                         // because we may have duplicated keys in both slots.
@@ -532,7 +535,7 @@ where
             }
             SlotState::NullOrKey => {
                 if let Some(pair) = entry1 {
-                    if pair.key.eq(key) {
+                    if key.eq(pair.key.borrow()) {
                         if result.tbl_idx.is_some() {
                             // We have a duplicated key in both slots,
                             // try to delete the second one.
@@ -777,7 +780,7 @@ where
                                         // should never be here.
                                         return;
                                     };
-                                    if !new_map.insert(
+                                    if let WriteResult::Retry = new_map.insert(
                                         SharedPtr::from_raw(slot.as_raw()),
                                         &self.new_map,
                                         guard,
@@ -1110,7 +1113,7 @@ where
     }
 
     /// `get_index` hashes the key and return the slot index.
-    fn get_index(&self, tbl_idx: usize, key: &K) -> SlotIndex {
+    fn get_index<Q: Hash + ?Sized>(&self, tbl_idx: usize, key: &Q) -> SlotIndex {
         let mut hasher = self.hash_builders[tbl_idx].build_hasher();
         key.hash(&mut hasher);
         let hash_value = hasher.finish().cast::<usize>();

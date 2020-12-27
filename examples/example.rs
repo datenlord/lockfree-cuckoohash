@@ -2,48 +2,53 @@ use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
 use std::sync::Arc;
 
 fn simple_read_write_example() {
-    // Create a new empty hashmap.
-    let hashtable = LockFreeCuckooHash::new();
+    // Create a new empty map.
+    let map = LockFreeCuckooHash::new();
     // or use LockFreeCuckooHash::with_capacity(capacity) to specify the max capacity.
 
-    // Insert the key-value pair into the hashtable.
-    let key = 1;
-    let value = "value";
-    hashtable.insert(key, value);
-
-    // Search the value corresponding to the key.
     // `guard` is used to keep the current thread pinned.
     // If a `guard` is pinned, the returned value's reference
     // is always valid. In other words, other threads cannot destroy
     // `value` until all of the `guard`s are unpinned.
     let guard = pin();
-    let result = hashtable.search_with_guard(&key, &guard);
-    assert!(result.is_some());
-    assert_eq!(*result.unwrap(), value);
 
-    let none_exist = hashtable.search_with_guard(&2, &guard);
-    assert!(none_exist.is_none());
+    // Insert the key-value pair into the map.
+    let key = 1;
+    let value = "value";
+    // The returned value indicates whether the map had the key before this insertion.
+    assert_eq!(map.insert(key, value), false);
+    assert_eq!(map.insert(key, "value2"), true);
+    // If you want to get the replaced value, try `insert_with_guard`.
+    assert_eq!(map.insert_with_guard(key, value, &guard), Some(&"value2"));
+
+    // Search the value corresponding to the key.
+    assert_eq!(map.get(&key, &guard), Some(&value));
+    assert_eq!(map.get(&2, &guard), None);
 
     // Remove a key-value pair.
-    let is_removed = hashtable.remove(&2);
-    assert!(!is_removed);
+    // `remove` returns `false` if the map does not have the key.
+    assert_eq!(map.remove(&2), false);
+    assert_eq!(map.remove(&key), true);
+    assert_eq!(map.remove(&key), false);
 
-    let is_removed = hashtable.remove(&key);
-    assert!(is_removed);
+    // If you want to get the removed value, use `remove_with_guard` instead.
+    map.insert(key, value);
+    assert_eq!(map.remove_with_guard(&key, &guard), Some(&value));
+    assert_eq!(map.remove_with_guard(&key, &guard), None);
 }
 
 fn multi_threads_read_write() {
-    let hashtable = Arc::new(LockFreeCuckooHash::new());
+    let map = Arc::new(LockFreeCuckooHash::new());
     // Create 4 threads to write the hash table.
     let mut handles = Vec::with_capacity(4);
     for i in 0..4 {
         // Transfer the reference to each thread, no need for a mutex.
-        let hashtable = hashtable.clone();
+        let map = map.clone();
         let handle = std::thread::spawn(move || {
             for j in 0..100 {
                 let key = i * 100 + j;
                 let value = i;
-                hashtable.insert(key, value);
+                map.insert(key, value);
             }
         });
         handles.push(handle);
@@ -54,14 +59,13 @@ fn multi_threads_read_write() {
     }
 
     let guard = pin();
-    assert_eq!(hashtable.size(), 4 * 100);
+    assert_eq!(map.size(), 4 * 100);
     for i in 0..4 {
         for j in 0..100 {
             let key = i * 100 + j;
             let value = i;
-            let ret = hashtable.search_with_guard(&key, &guard);
-            assert!(ret.is_some());
-            assert_eq!(*ret.unwrap(), value);
+            let ret = map.get(&key, &guard);
+            assert_eq!(ret, Some(&value));
         }
     }
 }
