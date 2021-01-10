@@ -16,5 +16,5 @@ crossbeam-epoch = "0.9.0"
 utilities = {git = "https://github.com/datenlord/utilities"}
 
 [dev-dependencies]
-rand = "0.7"
+rand = "0.8"
 num_cpus = "1.13.0"

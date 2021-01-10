@@ -127,7 +127,8 @@ fn test_multi_thread() {
             while entry_idx < new_insert_entries.len() {
                 // read 5 pairs ,then insert 1 pair.
                 for _ in 0..5 {
-                    let rnd_idx: usize = rng.gen_range(0, warmup_entries.len());
+                    // let rnd_idx: usize = rng.gen_range(0, warmup_entries.len());
+                    let rnd_idx: usize = rng.gen_range(0..warmup_entries.len());
                     let warmup_entry = &warmup_entries[rnd_idx];
                     let res = cuckoo_map.get(&warmup_entry.0, &guard);
                     assert_eq!(res.is_some(), true);
