@@ -69,7 +69,7 @@ pub enum WriteResult<'guard, K, V> {
     Retry,
 }
 
-/// `InsertType` is the type of a insert operation. 
+/// `InsertType` is the type of a insert operation.
 pub enum InsertType {
     /// Insert a new key-value pair if the key does not exist, otherwise replace it.
     InsertOrReplace,
@@ -287,9 +287,11 @@ where
                         // So we return with a `Get` semantic.
 
                         // The new inserted key-value could be dropped immediately
-                        // since no one can read it.  
-                        unsafe {new_slot.into_box();}
-                                              
+                        // since no one can read it.
+                        unsafe {
+                            new_slot.into_box();
+                        }
+
                         return WriteResult::Succ(Self::unwrap_slot(target_slot).1);
                     }
                 }
