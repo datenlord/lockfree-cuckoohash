@@ -69,6 +69,14 @@ pub enum WriteResult<'guard, K, V> {
     Retry,
 }
 
+/// `InsertType` is the type of a insert operation. 
+pub enum InsertType {
+    /// Insert a new key-value pair if the key does not exist, otherwise replace it.
+    InsertOrReplace,
+    /// Get the key-value pair if the key exists, otherwise insert a new one.
+    GetOrInsert,
+}
+
 /// `FindResult` is the returned type of the method `MapInner.find()`.
 /// For more details, see `MapInner.find()`.
 struct FindResult<'guard, K, V> {
@@ -223,9 +231,11 @@ where
     /// table, the value will be overridden.
     /// If the insert operation fails because of the map has been resized, this method returns
     /// `WriteResult::Retry`, and the caller need to retry.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn insert(
         &self,
         kvpair: SharedPtr<'guard, KVPair<K, V>>,
+        insert_type: InsertType,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
     ) -> WriteResult<'guard, K, V> {
@@ -270,6 +280,19 @@ where
             if let Some(slot_idx) = slot_idx {
                 // We found the key exists or we have an empty slot,
                 // just replace the slot with the new one.
+
+                if let InsertType::GetOrInsert = insert_type {
+                    if is_replcace {
+                        // The insert type is `GetOrInsert`, but the key exists.
+                        // So we return with a `Get` semantic.
+
+                        // The new inserted key-value could be dropped immediately
+                        // since no one can read it.  
+                        unsafe {new_slot.into_box();}
+                                              
+                        return WriteResult::Succ(Self::unwrap_slot(target_slot).1);
+                    }
+                }
 
                 // update the relocation count.
                 new_slot = Self::set_rlcount(new_slot, Self::get_rlcount(target_slot), guard);
@@ -782,6 +805,7 @@ where
                                     };
                                     if let WriteResult::Retry = new_map.insert(
                                         SharedPtr::from_raw(slot.as_raw()),
+                                        InsertType::InsertOrReplace,
                                         &self.new_map,
                                         guard,
                                     ) {
