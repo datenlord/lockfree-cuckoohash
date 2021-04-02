@@ -271,11 +271,85 @@ where
     pub fn insert_with_guard(&self, key: K, value: V, guard: &'guard Guard) -> Option<&'guard V> {
         let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair { key, value }));
         loop {
-            match self.load_inner(guard).insert(kvpair, &self.map, guard) {
+            match self.load_inner(guard).insert(
+                kvpair,
+                map_inner::InsertType::InsertOrReplace,
+                &self.map,
+                guard,
+            ) {
                 // If `insert` returns false it means the hashmap has been
                 // resized, we need to try to insert the kvpair again.
                 map_inner::WriteResult::Retry => continue,
                 map_inner::WriteResult::Succ(result) => return result.map(|pair| &pair.value),
+            }
+        }
+    }
+
+    /// Insert a new key-value pair into the map if the map does not contain the key.
+    /// If the map contains the key, return the old value.
+    /// If the map does not contain the key, insert the new key-value, and return the new value.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = pin();
+    /// assert_eq!(map.get_or_insert(1, "a", &guard), &"a");
+    /// assert_eq!(map.get_or_insert(1, "b", &guard), &"a");
+    ///
+    /// ```
+    #[inline]
+    #[allow(clippy::unwrap_used)]
+    pub fn get_or_insert(&self, key: K, value: V, guard: &'guard Guard) -> &'guard V {
+        let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair { key, value }));
+        loop {
+            match self.load_inner(guard).insert(
+                kvpair,
+                map_inner::InsertType::GetOrInsert,
+                &self.map,
+                guard,
+            ) {
+                // If `insert` returns false it means the hashmap has been
+                // resized, we need to try to insert the kvpair again.
+                map_inner::WriteResult::Retry => continue,
+                map_inner::WriteResult::Succ(result) => {
+                    return &result
+                        .unwrap_or(unsafe { kvpair.as_raw().as_ref().unwrap() })
+                        .value;
+                }
+            }
+        }
+    }
+
+    /// Insert a new key-value pair into the map if the map does not contain the key.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = pin();
+    /// assert_eq!(map.insert_if_not_exists(1, "a"), true);
+    /// assert_eq!(map.get(&1, &guard), Some(&"a"));
+    /// assert_eq!(map.insert_if_not_exists(1, "b"), false);
+    /// assert_eq!(map.get(&1, &guard), Some(&"a"));
+    /// ```
+    #[inline]
+    pub fn insert_if_not_exists(&self, key: K, value: V) -> bool {
+        let guard = &pin();
+        let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair { key, value }));
+        loop {
+            match self.load_inner(guard).insert(
+                kvpair,
+                map_inner::InsertType::GetOrInsert,
+                &self.map,
+                guard,
+            ) {
+                // If `insert` returns false it means the hashmap has been
+                // resized, we need to try to insert the kvpair again.
+                map_inner::WriteResult::Retry => continue,
+                map_inner::WriteResult::Succ(result) => return result.is_none(),
             }
         }
     }
@@ -375,6 +449,16 @@ mod tests {
         assert!(ret1.is_some());
         assert_eq!(*(ret1.unwrap()), value1);
         assert_eq!(hashtable.size(), 1);
+    }
+
+    #[test]
+    fn test_get_or_insert() {
+        let hashtable = LockFreeCuckooHash::new();
+        let guard = &pin();
+        hashtable.insert(1, 1);
+        assert_eq!(hashtable.get_or_insert(1, 2, guard), &1);
+        assert_eq!(hashtable.get_or_insert(2, 3, guard), &3);
+        assert_eq!(hashtable.get_or_insert(2, 4, guard), &3);
     }
 
     #[test]
