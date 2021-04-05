@@ -289,6 +289,33 @@ where
     /// If the map contains the key, return the old value.
     /// If the map does not contain the key, insert the new key-value, and return the new value.
     ///
+    /// Notice: When two concurrent `get_or_insert` methods are trying to insert the same key,
+    /// only one will succeed. But if a `get_or_insert` and a `insert` are called simultaneously with
+    /// the same key, the `get_or_insert` may still can insert the key-value pair even if `insert` has
+    /// already succeeded.
+    ///
+    /// An example for concurrent `get_or_insert`s：
+    ///
+    ///#         Thread A              |        Thread B
+    ///#  call `get_or_insert(key, A)` | call `get_or_insert(key, B)`
+    ///#                               |
+    ///#     return value = A          |      
+    ///#                               |     return value = A
+    ///
+    /// We can see, only one thread can insert the key-value, and the other will return the old value.
+    ///
+    /// An example for concurrent `get_or_insert` and `insert`:
+    ///
+    ///#         Thread A              |        Thread B
+    ///#  call `get_or_insert(key, A)` |   call `insert(key, B)`
+    ///#                               |      return value = B
+    ///#     return value = A          |       
+    ///#                               |   call `get(key, A)`
+    ///#                               |      return value = A
+    ///
+    /// We can see here, even if Thread B has already inserted (key, B) into the map, but Thread A can
+    /// still insert (key, A), which is not consistent with the semantics of `get_or_insert`.      
+    ///
     /// # Example:
     ///
     /// ```
@@ -323,6 +350,11 @@ where
     }
 
     /// Insert a new key-value pair into the map if the map does not contain the key.
+    ///
+    /// Notice: similar to `get_or_insert`, when two concurent `insert_if_not_exists` are
+    /// called, only one will succeed. But when concurrent `insert_if_not_exists` and `insert`
+    /// are called, `insert_if_not_exists` may still succeed even if `insert` has already inserted
+    /// the pair.
     ///
     /// # Example:
     ///
