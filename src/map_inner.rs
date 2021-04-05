@@ -277,15 +277,15 @@ where
                 }
             };
 
+            let mut need_relocate = false;
+
             if let Some(slot_idx) = slot_idx {
                 // We found the key exists or we have an empty slot,
                 // just replace the slot with the new one.
-
                 if let InsertType::GetOrInsert = insert_type {
                     if is_replcace {
                         // The insert type is `GetOrInsert`, but the key exists.
                         // So we return with a `Get` semantic.
-
                         // The new inserted key-value could be dropped immediately
                         // since no one can read it.
                         unsafe {
@@ -294,33 +294,44 @@ where
 
                         return WriteResult::Succ(Self::unwrap_slot(target_slot).1);
                     }
+                    if slot_idx.tbl_idx != 0 {
+                        // GetOrInsert only inserts key-value pair into the primary slot.
+                        // So if the primary slot is not empty, we force trigger a relocation.
+                        need_relocate = true;
+                    }
                 }
 
-                // update the relocation count.
-                new_slot = Self::set_rlcount(new_slot, Self::get_rlcount(target_slot), guard);
+                if !need_relocate {
+                    // update the relocation count.
+                    new_slot = Self::set_rlcount(new_slot, Self::get_rlcount(target_slot), guard);
 
-                match self.tables[slot_idx.tbl_idx][slot_idx.slot_idx].compare_and_set(
-                    target_slot,
-                    new_slot,
-                    Ordering::SeqCst,
-                    guard,
-                ) {
-                    Ok(old_slot) => {
-                        if !is_replcace {
-                            self.size.fetch_add(1, Ordering::SeqCst);
-                            return WriteResult::Succ(None);
+                    match self.tables[slot_idx.tbl_idx][slot_idx.slot_idx].compare_and_set(
+                        target_slot,
+                        new_slot,
+                        Ordering::SeqCst,
+                        guard,
+                    ) {
+                        Ok(old_slot) => {
+                            if !is_replcace {
+                                self.size.fetch_add(1, Ordering::SeqCst);
+                                return WriteResult::Succ(None);
+                            }
+                            if old_slot.as_raw() != new_slot.as_raw() {
+                                Self::defer_drop_ifneed(old_slot, guard);
+                            }
+                            return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
                         }
-                        if old_slot.as_raw() != new_slot.as_raw() {
-                            Self::defer_drop_ifneed(old_slot, guard);
+                        Err(err) => {
+                            new_slot = err.1; // the snapshot is not valid, try again.
+                            continue;
                         }
-                        return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
-                    }
-                    Err(err) => {
-                        new_slot = err.1; // the snapshot is not valid, try again.
-                        continue;
                     }
                 }
             } else {
+                need_relocate = true;
+            }
+
+            if need_relocate {
                 // We meet a hash collision here, relocate the first slot.
                 match self.relocate(slot_idx0, outer_map, guard) {
                     RelocateResult::Succ => continue,
