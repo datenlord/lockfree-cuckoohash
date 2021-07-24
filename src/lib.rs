@@ -157,6 +157,46 @@ where
         self.load_inner(&guard).size()
     }
 
+    /// # Safety
+    ///
+    /// Clear the hashmap with the specified capacity.
+    /// The caller must make sure the hashmap is not during a resize.
+    #[inline]
+    pub unsafe fn clear(&self) {
+        let cap = self.capacity();
+        self.clear_with_capacity(cap);
+    }
+
+    /// # Safety
+    ///
+    /// Clear the hashmap with the specified capacity.
+    /// The caller must make sure the hashmap is not during a resize.
+    #[inline]
+    pub unsafe fn clear_with_capacity(&self, capacity: usize) {
+        let guard = pin();
+        let new_map = SharedPtr::from_box(Box::new(map_inner::MapInner::<K, V>::with_capacity(
+            capacity,
+            [RandomState::new(), RandomState::new()],
+        )));
+        loop {
+            let current_map = self.map.load(Ordering::SeqCst, &guard);
+            match self
+                .map
+                .compare_and_set(current_map, new_map, Ordering::SeqCst, &guard)
+            {
+                Ok(old_map) => {
+                    guard.defer_unchecked(move || {
+                        old_map.into_box();
+                    });
+                    break;
+                }
+                Err(_) => {
+                    continue;
+                }
+            }
+        }
+    }
+
     /// Returns a reference to the value corresponding to the key.
     ///
     /// # Example:
@@ -504,5 +544,20 @@ mod tests {
         assert!(!hashtable.remove(&fake_key));
         assert!(hashtable.remove(&key));
         assert_eq!(hashtable.size(), 0);
+    }
+
+    #[test]
+    fn test_clear() {
+        let hashtable = LockFreeCuckooHash::new();
+        let key = 1;
+        let value = 2;
+        hashtable.insert(key, value);
+        let guard = pin();
+        let ret = hashtable.get(&key, &guard);
+        assert!(ret.is_some());
+        assert_eq!(*(ret.unwrap()), value);
+        unsafe { hashtable.clear() };
+        let ret = hashtable.get(&key, &guard);
+        assert!(ret.is_none());
     }
 }
