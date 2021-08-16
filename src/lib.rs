@@ -426,6 +426,47 @@ where
         }
     }
 
+    /// Compare the cuurent value with `old_value`, update the value to `new_value` if
+    /// they are equal.
+    /// This method returns true if the update succeeds, otherwise returns false.
+    ///     
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = pin();
+    /// assert_eq!(map.insert(1, "a"), false);
+    /// assert_eq!(map.compare_and_update(1, "c", &"b"), false);
+    /// assert_eq!(map.get(&1, &guard), Some(&"a"));
+    /// assert_eq!(map.compare_and_update(1, "c", &"a"), true);
+    /// assert_eq!(map.get(&1, &guard), Some(&"c"));
+    #[inline]
+    pub fn compare_and_update(&self, key: K, new_value: V, old_value: &V) -> bool
+    where
+        V: Eq,
+    {
+        let guard = &pin();
+        let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair {
+            key,
+            value: new_value,
+        }));
+        let update_func: fn(&V, &V) -> bool = V::eq;
+        loop {
+            match self.load_inner(guard).insert(
+                kvpair,
+                map_inner::InsertType::CompareAndUpdate(old_value, update_func),
+                &self.map,
+                guard,
+            ) {
+                // If `insert` returns false it means the hashmap has been
+                // resized, we need to try to insert the kvpair again.
+                map_inner::WriteResult::Retry => continue,
+                map_inner::WriteResult::Succ(res) => return res.is_some(),
+            }
+        }
+    }
+
     /// Removes a key from the map, returning `true` if the key was previously in the map.
     /// If you want to get the old value, try `map.remove_with_guard()` instead.
     ///
@@ -559,5 +600,16 @@ mod tests {
         unsafe { hashtable.clear() };
         let ret = hashtable.get(&key, &guard);
         assert!(ret.is_none());
+    }
+
+    #[test]
+    fn test_compare_and_update() {
+        let hashtable = LockFreeCuckooHash::new();
+        let guard = &pin();
+        hashtable.insert(1, 10);
+        assert_eq!(hashtable.compare_and_update(1, 20, &30), false);
+        assert_eq!(hashtable.get(&1, guard), Some(&10));
+        assert_eq!(hashtable.compare_and_update(1, 20, &10), true);
+        assert_eq!(hashtable.get(&1, guard), Some(&20));
     }
 }

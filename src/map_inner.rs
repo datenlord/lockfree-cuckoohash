@@ -70,11 +70,17 @@ pub enum WriteResult<'guard, K, V> {
 }
 
 /// `InsertType` is the type of a insert operation.
-pub enum InsertType {
+pub enum InsertType<'guard, V> {
     /// Insert a new key-value pair if the key does not exist, otherwise replace it.
     InsertOrReplace,
     /// Get the key-value pair if the key exists, otherwise insert a new one.
     GetOrInsert,
+    /// Compare the current value with the specified one, update it to the new value
+    /// if they are equal.
+    /// The parameters for this item are:
+    /// 1. the old value
+    /// 2. the "eq" function that used to compare the current and old value.
+    CompareAndUpdate(&'guard V, fn(&V, &V) -> bool),
 }
 
 /// `FindResult` is the returned type of the method `MapInner.find()`.
@@ -231,11 +237,11 @@ where
     /// table, the value will be overridden.
     /// If the insert operation fails because of the map has been resized, this method returns
     /// `WriteResult::Retry`, and the caller need to retry.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
     pub fn insert(
         &self,
         kvpair: SharedPtr<'guard, KVPair<K, V>>,
-        insert_type: InsertType,
+        insert_type: InsertType<'guard, V>,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
     ) -> WriteResult<'guard, K, V> {
@@ -282,23 +288,46 @@ where
             if let Some(slot_idx) = slot_idx {
                 // We found the key exists or we have an empty slot,
                 // just replace the slot with the new one.
-                if let InsertType::GetOrInsert = insert_type {
-                    if is_replcace {
-                        // The insert type is `GetOrInsert`, but the key exists.
-                        // So we return with a `Get` semantic.
-                        // The new inserted key-value could be dropped immediately
-                        // since no one can read it.
-                        unsafe {
-                            new_slot.into_box();
-                        }
 
-                        return WriteResult::Succ(Self::unwrap_slot(target_slot).1);
+                match insert_type {
+                    InsertType::GetOrInsert => {
+                        if is_replcace {
+                            // The insert type is `GetOrInsert`, but the key exists.
+                            // So we return with a `Get` semantic.
+                            // The new inserted key-value could be dropped immediately
+                            // since no one can read it.
+                            unsafe {
+                                new_slot.into_box();
+                            }
+
+                            return WriteResult::Succ(Self::unwrap_slot(target_slot).1);
+                        }
+                        if slot_idx.tbl_idx != 0 {
+                            // GetOrInsert only inserts key-value pair into the primary slot.
+                            // So if the primary slot is not empty, we force trigger a relocation.
+                            need_relocate = true;
+                        }
                     }
-                    if slot_idx.tbl_idx != 0 {
-                        // GetOrInsert only inserts key-value pair into the primary slot.
-                        // So if the primary slot is not empty, we force trigger a relocation.
-                        need_relocate = true;
+                    InsertType::CompareAndUpdate(old_value, compare_func) => {
+                        // The insert type is `compareAndUpdate`, so we need to check if
+                        // the current value equals to the old_v.
+                        let (_, entry, _) = Self::unwrap_slot(target_slot);
+                        if entry.is_none() {
+                            unsafe {
+                                new_slot.into_box();
+                            }
+                            return WriteResult::Succ(None);
+                        }
+                        if let Some(current_pair) = entry {
+                            if !compare_func(old_value, &current_pair.value) {
+                                unsafe {
+                                    new_slot.into_box();
+                                }
+                                return WriteResult::Succ(None);
+                            }
+                        }
                     }
+                    InsertType::InsertOrReplace => {}
                 }
 
                 if !need_relocate {
