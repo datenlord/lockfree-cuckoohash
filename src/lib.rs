@@ -444,7 +444,7 @@ where
     #[inline]
     pub fn compare_and_update(&self, key: K, new_value: V, old_value: &V) -> bool
     where
-        V: Eq,
+        V: PartialEq,
     {
         let guard = &pin();
         let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair {
