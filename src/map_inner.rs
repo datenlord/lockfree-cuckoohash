@@ -1,11 +1,11 @@
 #![allow(clippy::indexing_slicing)] // TODO: use safe method for indexing and remove this line.
 
 use super::pointer::{AtomicPtr, SharedPtr};
+use clippy_utilities::{Cast, OverflowArithmetic};
 use crossbeam_epoch::{pin, Guard};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{borrow::Borrow, collections::hash_map::RandomState};
-use utilities::{Cast, OverflowArithmetic};
 
 /// `KVPair` contains the key-value pair.
 #[derive(Debug)]
