@@ -59,12 +59,25 @@ impl SlotState {
     }
 }
 
-/// `WriteResult` is the returned type of the method `MapInner.insert()` and `MapInner.remove()`.
-pub enum WriteResult<'guard, K, V> {
-    /// The write operation succeeds, returns `Some(KVPair)` if the map had the key present,
+/// `InsertResult` is the returned type of the method `MapInner.insert()`
+pub enum InsertResult<'guard, K, V> {
+    /// The insert operation succeeded, returns `Some(&KVPair)` if the map had the key,
     /// otherwise returns `None` if the map does not have that key.
     Succ(Option<&'guard KVPair<K, V>>),
-    /// The write operation might fail because the hashmap has been resized by other writers,
+    /// The insert operation failed, returns `Some(&KVPair)` if the map had the key,
+    /// otherwise returns `None` if the map does not have that key.
+    Fail(Option<&'guard KVPair<K, V>>),
+    /// The insert operation might fail because the hashmap has been resized by other writers,
+    /// so the caller need to retry the insert again.
+    Retry,
+}
+
+/// `RemoveResult` is the returned type of the method `MapInner.remove()`.
+pub enum RemoveResult<'guard, K, V> {
+    /// The remove operation succeeds, returns `Some(&KVPair)` if the map had the key,
+    /// otherwise returns `None` if the map does not have that key.
+    Succ(Option<&'guard KVPair<K, V>>),
+    /// The remove operation might fail because the hashmap has been resized by other writers,
     /// so the caller need to retry the insert again.
     Retry,
 }
@@ -75,12 +88,16 @@ pub enum InsertType<'guard, V> {
     InsertOrReplace,
     /// Get the key-value pair if the key exists, otherwise insert a new one.
     GetOrInsert,
-    /// Compare the current value with the specified one, update it to the new value
+    /// Compare the current value with the expected one, update it to the new value
     /// if they are equal.
-    /// The parameters for this item are:
-    /// 1. the old value
-    /// 2. the "eq" function that used to compare the current and old value.
+    /// The parameters for this item are the old_value and compare function
     CompareAndUpdate(&'guard V, fn(&V, &V) -> bool),
+    /// Check the current value with the new value, update it to the new value
+    ///  if the check function return true
+    /// The parameters for this item is
+    /// 1. the check function
+    /// 2. whether need to insert if the key doesn't exist
+    UpdateOn(fn(&V, &V) -> bool, bool),
 }
 
 /// `FindResult` is the returned type of the method `MapInner.find()`.
@@ -244,14 +261,14 @@ where
         insert_type: InsertType<'guard, V>,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
-    ) -> WriteResult<'guard, K, V> {
+    ) -> InsertResult<'guard, K, V> {
         let mut new_slot = kvpair;
         let (_, new_entry, _) = Self::unwrap_slot(new_slot);
         // new_entry is just created from `key`, so the unwrap() is safe here.
-        let new_key = if let Some(pair) = new_entry {
-            &pair.key
+        let (new_key, new_value) = if let Some(pair) = new_entry {
+            (&pair.key, &pair.value)
         } else {
-            return WriteResult::Retry;
+            return InsertResult::Retry;
         };
         let slot_idx0 = self.get_index(0, new_key);
         let slot_idx1 = self.get_index(1, new_key);
@@ -259,9 +276,9 @@ where
             let find_result = self.find(new_key, slot_idx0, slot_idx1, outer_map, guard);
             let (tbl_idx, slot0, slot1) = match find_result {
                 Some(r) => (r.tbl_idx, r.slot0, r.slot1),
-                None => return WriteResult::Retry,
+                None => return InsertResult::Retry,
             };
-            let (slot_idx, target_slot, is_replcace) = match tbl_idx {
+            let (slot_idx, target_slot, key_exist) = match tbl_idx {
                 Some(tbl_idx) => {
                     // The key has already been in the table, we need to replace the value.
                     if tbl_idx == 0 {
@@ -291,16 +308,17 @@ where
 
                 match insert_type {
                     InsertType::GetOrInsert => {
-                        if is_replcace {
+                        if key_exist {
                             // The insert type is `GetOrInsert`, but the key exists.
                             // So we return with a `Get` semantic.
                             // The new inserted key-value could be dropped immediately
                             // since no one can read it.
+                            // SAFETY: new_slot is guaranteed to be non-null.
                             unsafe {
-                                new_slot.into_box();
+                                drop(new_slot.into_box());
                             }
 
-                            return WriteResult::Succ(Self::unwrap_slot(target_slot).1);
+                            return InsertResult::Fail(Self::unwrap_slot(target_slot).1);
                         }
                         if slot_idx.tbl_idx != 0 {
                             // GetOrInsert only inserts key-value pair into the primary slot.
@@ -308,22 +326,43 @@ where
                             need_relocate = true;
                         }
                     }
-                    InsertType::CompareAndUpdate(old_value, compare_func) => {
+                    InsertType::CompareAndUpdate(old_value, compare_fn) => {
                         // The insert type is `compareAndUpdate`, so we need to check if
                         // the current value equals to the old_v.
-                        let (_, entry, _) = Self::unwrap_slot(target_slot);
-                        if entry.is_none() {
+                        if !key_exist {
+                            // SAFETY: new_slot is guaranteed to be non-null.
                             unsafe {
-                                new_slot.into_box();
+                                drop(new_slot.into_box());
                             }
-                            return WriteResult::Succ(None);
+                            return InsertResult::Fail(None);
                         }
+                        let (_, entry, _) = Self::unwrap_slot(target_slot);
                         if let Some(current_pair) = entry {
-                            if !compare_func(old_value, &current_pair.value) {
+                            if !compare_fn(old_value, &current_pair.value) {
+                                // SAFETY: new_slot is guaranteed to be non-null.
                                 unsafe {
-                                    new_slot.into_box();
+                                    drop(new_slot.into_box());
                                 }
-                                return WriteResult::Succ(None);
+                                return InsertResult::Fail(Some(current_pair));
+                            }
+                        }
+                    }
+                    InsertType::UpdateOn(compare_fn, force_insert) => {
+                        if !key_exist && !force_insert {
+                            // SAFETY: new_slot is guaranteed to be non-null.
+                            unsafe {
+                                drop(new_slot.into_box());
+                            }
+                            return InsertResult::Fail(None);
+                        }
+                        let (_, entry, _) = Self::unwrap_slot(target_slot);
+                        if let Some(current_pair) = entry {
+                            if !compare_fn(&current_pair.value, new_value) {
+                                // SAFETY: new_slot is guaranteed to be non-null.
+                                unsafe {
+                                    drop(new_slot.into_box());
+                                }
+                                return InsertResult::Fail(Some(current_pair));
                             }
                         }
                     }
@@ -341,14 +380,14 @@ where
                         guard,
                     ) {
                         Ok(old_slot) => {
-                            if !is_replcace {
+                            if !key_exist {
                                 self.size.fetch_add(1, Ordering::SeqCst);
-                                return WriteResult::Succ(None);
+                                return InsertResult::Succ(None);
                             }
                             if old_slot.as_raw() != new_slot.as_raw() {
                                 Self::defer_drop_ifneed(old_slot, guard);
                             }
-                            return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
+                            return InsertResult::Succ(Self::unwrap_slot(old_slot).1);
                         }
                         Err(err) => {
                             new_slot = err.1; // the snapshot is not valid, try again.
@@ -366,10 +405,10 @@ where
                     RelocateResult::Succ => continue,
                     RelocateResult::NeedResize => {
                         self.resize(outer_map, guard);
-                        return WriteResult::Retry;
+                        return InsertResult::Retry;
                     }
                     RelocateResult::Resized => {
-                        return WriteResult::Retry;
+                        return InsertResult::Retry;
                     }
                 }
             }
@@ -378,14 +417,14 @@ where
 
     /// Remove a key from the map.
     /// If the remove operation fails because of the map has been resized, this method returns
-    /// `WriteResult::Retry`, and the caller need to retry. Otherwise, it will return the removed
+    /// `RemoveResult::Retry`, and the caller need to retry. Otherwise, it will return the removed
     /// value if the key exists, or `None` if not.
     pub fn remove<Q: ?Sized>(
         &self,
         key: &Q,
         outer_map: &AtomicPtr<Self>,
         guard: &'guard Guard,
-    ) -> WriteResult<'guard, K, V>
+    ) -> RemoveResult<'guard, K, V>
     where
         K: Borrow<Q>,
         Q: Eq + Hash,
@@ -398,11 +437,11 @@ where
             let find_result = self.find(key, slot_idx0, slot_idx1, outer_map, guard);
             let (tbl_idx, slot0, slot1) = match find_result {
                 Some(r) => (r.tbl_idx, r.slot0, r.slot1),
-                None => return WriteResult::Retry,
+                None => return RemoveResult::Retry,
             };
             let tbl_idx = match tbl_idx {
                 Some(idx) => idx,
-                None => return WriteResult::Succ(None), // The key does not exist.
+                None => return RemoveResult::Succ(None), // The key does not exist.
             };
             if tbl_idx == 0 {
                 Self::set_rlcount(new_slot, Self::get_rlcount(slot0), guard);
@@ -415,7 +454,7 @@ where
                     Ok(old_slot) => {
                         self.size.fetch_sub(1, Ordering::SeqCst);
                         Self::defer_drop_ifneed(old_slot, guard);
-                        return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
+                        return RemoveResult::Succ(Self::unwrap_slot(old_slot).1);
                     }
                     Err(_) => continue,
                 }
@@ -437,7 +476,7 @@ where
                     Ok(old_slot) => {
                         self.size.fetch_sub(1, Ordering::SeqCst);
                         Self::defer_drop_ifneed(old_slot, guard);
-                        return WriteResult::Succ(Self::unwrap_slot(old_slot).1);
+                        return RemoveResult::Succ(Self::unwrap_slot(old_slot).1);
                     }
                     Err(_) => continue,
                 }
@@ -771,7 +810,7 @@ where
                 // Free the box
                 // TODO: we can avoid this redundent allocation.
                 unsafe {
-                    new_map.into_box();
+                    drop(new_map.into_box());
                 }
             }
         }
@@ -808,7 +847,7 @@ where
                 {
                     unsafe {
                         guard.defer_unchecked(move || {
-                            current_map.into_box();
+                            drop(current_map.into_box());
                         });
                     }
                 }
@@ -845,7 +884,7 @@ where
                                         // should never be here.
                                         return;
                                     };
-                                    if let WriteResult::Retry = new_map.insert(
+                                    if let InsertResult::Retry = new_map.insert(
                                         SharedPtr::from_raw(slot.as_raw()),
                                         InsertType::InsertOrReplace,
                                         &self.new_map,
@@ -1197,7 +1236,7 @@ where
                 // Because only one thread can call this method for the same
                 // kv-pair, only one thread can take the ownership.
                 guard.defer_unchecked(move || {
-                    slot.into_box();
+                    drop(slot.into_box());
                 });
             }
         }

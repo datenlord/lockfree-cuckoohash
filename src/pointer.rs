@@ -110,6 +110,7 @@ impl<T> SharedPtr<'_, T> {
     }
 
     /// `into_box` converts the pointer into a Box<T>.
+    #[must_use]
     pub unsafe fn into_box(self) -> Box<T> {
         Box::from_raw(self.as_mut_raw())
     }
