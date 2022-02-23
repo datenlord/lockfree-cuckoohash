@@ -112,7 +112,7 @@ where
         let guard = pin();
         self.load_inner(&guard).drop_entries(&guard);
         unsafe {
-            self.map.load(Ordering::SeqCst, &guard).into_box();
+            drop(self.map.load(Ordering::SeqCst, &guard).into_box());
         }
     }
 }
@@ -186,7 +186,7 @@ where
             {
                 Ok(old_map) => {
                     guard.defer_unchecked(move || {
-                        old_map.into_box();
+                        drop(old_map.into_box());
                     });
                     break;
                 }
@@ -317,10 +317,11 @@ where
                 &self.map,
                 guard,
             ) {
-                // If `insert` returns false it means the hashmap has been
+                // If `insert` returns `Retry` it means the hashmap has been
                 // resized, we need to try to insert the kvpair again.
-                map_inner::WriteResult::Retry => continue,
-                map_inner::WriteResult::Succ(result) => return result.map(|pair| &pair.value),
+                // `InsertOrReplace` shouldn't fail, just retry for `Fail`.
+                map_inner::InsertResult::Retry | map_inner::InsertResult::Fail(_) => continue,
+                map_inner::InsertResult::Succ(result) => return result.map(|pair| &pair.value),
             }
         }
     }
@@ -377,13 +378,14 @@ where
                 &self.map,
                 guard,
             ) {
-                // If `insert` returns false it means the hashmap has been
+                // If `insert` returns retry it means the hashmap has been
                 // resized, we need to try to insert the kvpair again.
-                map_inner::WriteResult::Retry => continue,
-                map_inner::WriteResult::Succ(result) => {
-                    return &result
-                        .unwrap_or(unsafe { kvpair.as_raw().as_ref().unwrap() })
-                        .value;
+                map_inner::InsertResult::Retry => continue,
+                map_inner::InsertResult::Fail(result) => return &result.unwrap().value,
+                map_inner::InsertResult::Succ(_) => {
+                    // SAFETY: kvpair is generated in the function and lifetime is protected by Guard.
+                    // kvpair is guaranteed to be non-null.
+                    return unsafe { &(*kvpair.as_raw()).value };
                 }
             }
         }
@@ -418,15 +420,16 @@ where
                 &self.map,
                 guard,
             ) {
-                // If `insert` returns false it means the hashmap has been
+                // If `insert` returns result it means the hashmap has been
                 // resized, we need to try to insert the kvpair again.
-                map_inner::WriteResult::Retry => continue,
-                map_inner::WriteResult::Succ(result) => return result.is_none(),
+                map_inner::InsertResult::Retry => continue,
+                map_inner::InsertResult::Fail(_) => return false,
+                map_inner::InsertResult::Succ(_) => return true,
             }
         }
     }
 
-    /// Compare the cuurent value with `old_value`, update the value to `new_value` if
+    /// Compare the current value with `old_value`, update the value to `new_value` if
     /// they are equal.
     /// This method returns true if the update succeeds, otherwise returns false.
     ///     
@@ -441,6 +444,7 @@ where
     /// assert_eq!(map.get(&1, &guard), Some(&"a"));
     /// assert_eq!(map.compare_and_update(1, "c", &"a"), true);
     /// assert_eq!(map.get(&1, &guard), Some(&"c"));
+    /// ```
     #[inline]
     pub fn compare_and_update(&self, key: K, new_value: V, old_value: &V) -> bool
     where
@@ -451,20 +455,111 @@ where
             key,
             value: new_value,
         }));
-        let update_func: fn(&V, &V) -> bool = V::eq;
+        let compare_fn: fn(&V, &V) -> bool = V::eq;
         loop {
             match self.load_inner(guard).insert(
                 kvpair,
-                map_inner::InsertType::CompareAndUpdate(old_value, update_func),
+                map_inner::InsertType::CompareAndUpdate(old_value, compare_fn),
                 &self.map,
                 guard,
             ) {
                 // If `insert` returns false it means the hashmap has been
                 // resized, we need to try to insert the kvpair again.
-                map_inner::WriteResult::Retry => continue,
-                map_inner::WriteResult::Succ(res) => return res.is_some(),
+                map_inner::InsertResult::Retry => continue,
+                map_inner::InsertResult::Fail(_) => return false,
+                map_inner::InsertResult::Succ(_) => return true,
             }
         }
+    }
+
+    /// Conditional update helper function.
+    fn update_on_helper(
+        &self,
+        key: K,
+        new_value: V,
+        compare_fn: fn(&V, &V) -> bool,
+        force_insert: bool,
+        guard: &'guard Guard,
+    ) -> (bool, Option<&'guard V>) {
+        let kvpair = SharedPtr::from_box(Box::new(map_inner::KVPair {
+            key,
+            value: new_value,
+        }));
+        loop {
+            match self.load_inner(guard).insert(
+                kvpair,
+                map_inner::InsertType::UpdateOn(compare_fn, force_insert),
+                &self.map,
+                guard,
+            ) {
+                // If `insert` returns false it means the hashmap has been
+                // resized, we need to try to insert the kvpair again.
+                map_inner::InsertResult::Retry => continue,
+                map_inner::InsertResult::Fail(result) => {
+                    return (false, result.map(|kv| &kv.value));
+                }
+                map_inner::InsertResult::Succ(result) => {
+                    return (true, result.map(|kv| &kv.value));
+                }
+            }
+        }
+    }
+
+    /// If the key exist, update the current value to `new_value` if the compare function return true
+    /// otherwise no change.
+    /// This method returns a `(bool, Option<&V>)` tuple.
+    /// `bool` indicates if the value is updated.
+    /// `Option<&V>` is the old value.
+    ///     
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = &pin();
+    /// assert_eq!(map.update_on(1, 5, |v1, v2| { v1 < v2 }, guard), (false, None));
+    /// assert_eq!(map.insert(1, 10), false);
+    /// assert_eq!(map.update_on(1, 5, |v1, v2| { v1 < v2 }, guard), (false, Some(&10)));
+    /// assert_eq!(map.update_on(1, 20, |v1, v2| { v1 < v2 }, guard), (true, Some(&10)));
+    /// assert_eq!(map.get(&1, guard), Some(&20));
+    /// ```
+    #[inline]
+    pub fn update_on(
+        &self,
+        key: K,
+        new_value: V,
+        compare_fn: fn(&V, &V) -> bool,
+        guard: &'guard Guard,
+    ) -> (bool, Option<&'guard V>) {
+        self.update_on_helper(key, new_value, compare_fn, false, guard)
+    }
+
+    /// If the key exist, update the current value to `new_value` if the compare function return true
+    /// otherwise insert the key.
+    /// This method returns a `(bool, Option<&V>)` tuple.
+    /// `bool` indicates if the value is updated or inserted.
+    /// `Option<&V>` is the old value.
+    ///     
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = &pin();
+    /// assert_eq!(map.insert_or_update_on(1, 10, |v1, v2| { v1 < v2 }, guard), (true, None));
+    /// assert_eq!(map.insert_or_update_on(1, 5, |v1, v2| { v1 < v2 }, guard), (false, Some(&10)));
+    /// assert_eq!(map.insert_or_update_on(1, 20, |v1, v2| { v1 < v2 }, guard), (true, Some(&10)));
+    /// assert_eq!(map.get(&1, guard), Some(&20));
+    /// ```
+    #[inline]
+    pub fn insert_or_update_on(
+        &self,
+        key: K,
+        new_value: V,
+        compare_fn: fn(&V, &V) -> bool,
+        guard: &'guard Guard,
+    ) -> (bool, Option<&'guard V>) {
+        self.update_on_helper(key, new_value, compare_fn, true, guard)
     }
 
     /// Removes a key from the map, returning `true` if the key was previously in the map.
@@ -514,18 +609,17 @@ where
     {
         loop {
             match self.load_inner(guard).remove(key, &self.map, guard) {
-                map_inner::WriteResult::Retry => continue,
-                map_inner::WriteResult::Succ(old) => return old.map(|pair| &pair.value),
+                map_inner::RemoveResult::Retry => continue,
+                map_inner::RemoveResult::Succ(old) => return old.map(|pair| &pair.value),
             }
         }
     }
 
     /// `load_inner` atomically loads the `MapInner` of hashmap.
-    #[allow(clippy::unwrap_used)]
     fn load_inner(&self, guard: &'guard Guard) -> &'guard map_inner::MapInner<K, V> {
         let raw = self.map.load(Ordering::SeqCst, guard).as_raw();
-        // map is always not null, so the unsafe code is safe here.
-        unsafe { raw.as_ref().unwrap() }
+        // SAFETY: map is always not null, so the unsafe code is safe here.
+        unsafe { &*raw }
     }
 }
 
@@ -610,6 +704,46 @@ mod tests {
         assert_eq!(hashtable.compare_and_update(1, 20, &30), false);
         assert_eq!(hashtable.get(&1, guard), Some(&10));
         assert_eq!(hashtable.compare_and_update(1, 20, &10), true);
+        assert_eq!(hashtable.get(&1, guard), Some(&20));
+    }
+
+    #[test]
+    fn test_update_on() {
+        let hashtable = LockFreeCuckooHash::new();
+        let guard = &pin();
+        assert_eq!(
+            hashtable.update_on(1, 5, |v1, v2| { v1 < v2 }, guard),
+            (false, None)
+        );
+        hashtable.insert(1, 10);
+        assert_eq!(
+            hashtable.update_on(1, 5, |v1, v2| { v1 < v2 }, guard),
+            (false, Some(&10))
+        );
+        assert_eq!(hashtable.get(&1, guard), Some(&10));
+        assert_eq!(
+            hashtable.update_on(1, 20, |v1, v2| { v1 < v2 }, guard),
+            (true, Some(&10))
+        );
+        assert_eq!(hashtable.get(&1, guard), Some(&20));
+    }
+
+    #[test]
+    fn test_insert_or_update_on() {
+        let hashtable = LockFreeCuckooHash::new();
+        let guard = &pin();
+        assert_eq!(
+            hashtable.insert_or_update_on(1, 10, |v1, v2| { v1 < v2 }, guard),
+            (true, None)
+        );
+        assert_eq!(
+            hashtable.insert_or_update_on(1, 5, |v1, v2| { v1 < v2 }, guard),
+            (false, Some(&10))
+        );
+        assert_eq!(
+            hashtable.insert_or_update_on(1, 20, |v1, v2| { v1 < v2 }, guard),
+            (true, Some(&10))
+        );
         assert_eq!(hashtable.get(&1, guard), Some(&20));
     }
 }
