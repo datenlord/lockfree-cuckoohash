@@ -1,3 +1,5 @@
+#![allow(clippy::bool_assert_comparison)] // FIXME
+
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
 use rand::Rng;
 use std::collections::HashMap;
