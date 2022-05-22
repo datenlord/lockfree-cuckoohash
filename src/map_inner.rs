@@ -146,22 +146,22 @@ where
     K: std::fmt::Debug,
     V: std::fmt::Debug,
 {
-    // This is not thread-safe.
+    // FIXME: This is not thread-safe.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let capacity = self.tables[0].len();
         let guard = pin();
-        let mut f = f.debug_map();
+        let mut debug = f.debug_map();
         for tbl_idx in 0..2 {
             for slot_idx in 0..capacity {
                 let slot = self.tables[tbl_idx][slot_idx].load(Ordering::SeqCst, &guard);
                 unsafe {
                     if let Some(kv) = slot.as_raw().as_ref() {
-                        f.entry(&kv.key, &kv.value);
+                        debug.entry(&kv.key, &kv.value);
                     }
                 }
             }
         }
-        f.finish()
+        debug.finish()
     }
 }
 
@@ -172,7 +172,7 @@ where
     /// `with_capacity` creates a new `MapInner` with specified capacity.
     pub fn with_capacity(capacity: usize, hash_builders: [RandomState; 2]) -> Self {
         let single_table_capacity = match capacity.checked_add(1) {
-            Some(capacity) => capacity.overflow_div(2),
+            Some(cap) => cap.overflow_div(2),
             None => capacity.overflow_div(2),
         };
         let mut tables = Vec::with_capacity(2);
@@ -274,11 +274,11 @@ where
         let slot_idx1 = self.get_index(1, new_key);
         loop {
             let find_result = self.find(new_key, slot_idx0, slot_idx1, outer_map, guard);
-            let (tbl_idx, slot0, slot1) = match find_result {
+            let (tbl_idx_opt, slot0, slot1) = match find_result {
                 Some(r) => (r.tbl_idx, r.slot0, r.slot1),
                 None => return InsertResult::Retry,
             };
-            let (slot_idx, target_slot, key_exist) = match tbl_idx {
+            let (slot_idx_opt, target_slot, key_exist) = match tbl_idx_opt {
                 Some(tbl_idx) => {
                     // The key has already been in the table, we need to replace the value.
                     if tbl_idx == 0 {
@@ -302,7 +302,7 @@ where
 
             let mut need_relocate = false;
 
-            if let Some(slot_idx) = slot_idx {
+            if let Some(slot_idx) = slot_idx_opt {
                 // We found the key exists or we have an empty slot,
                 // just replace the slot with the new one.
 
@@ -435,11 +435,11 @@ where
         let new_slot = SharedPtr::null();
         loop {
             let find_result = self.find(key, slot_idx0, slot_idx1, outer_map, guard);
-            let (tbl_idx, slot0, slot1) = match find_result {
+            let (tbl_idx_opt, slot0, slot1) = match find_result {
                 Some(r) => (r.tbl_idx, r.slot0, r.slot1),
                 None => return RemoveResult::Retry,
             };
-            let tbl_idx = match tbl_idx {
+            let tbl_idx = match tbl_idx_opt {
                 Some(idx) => idx,
                 None => return RemoveResult::Succ(None), // The key does not exist.
             };
@@ -841,11 +841,12 @@ where
             let copied_num = self.copied_num.load(Ordering::SeqCst);
             if copied_num == capacity {
                 // try to promote the new map
-                let current_map = SharedPtr::from_raw(self);
-                let new_map = self.new_map.load(Ordering::SeqCst, guard);
-                if let Ok(current_map) =
+                let result = {
+                    let current_map = SharedPtr::from_raw(self);
+                    let new_map = self.new_map.load(Ordering::SeqCst, guard);
                     outer_map.compare_and_set(current_map, new_map, Ordering::SeqCst, guard)
-                {
+                };
+                if let Ok(current_map) = result {
                     unsafe {
                         guard.defer_unchecked(move || {
                             drop(current_map.into_box());
@@ -946,12 +947,12 @@ where
                     }
                     slot = self.get_slot(slot_idx, guard);
                 }
-                let (_, entry, state) = Self::unwrap_slot(slot);
+                let (_, entry_opt, state) = Self::unwrap_slot(slot);
                 if state == SlotState::Copied {
                     self.help_resize(outer_map, guard);
                     return RelocateResult::Resized;
                 }
-                if let Some(entry) = entry {
+                if let Some(entry) = entry_opt {
                     let key = &entry.key;
 
                     // If there are duplicated keys in both slots, we may
