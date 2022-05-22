@@ -177,7 +177,7 @@ where
         };
         let mut tables = Vec::with_capacity(2);
 
-        for _ in 0..2 {
+        for _ in 0_u32..2 {
             let mut table = Vec::with_capacity(single_table_capacity);
             for _ in 0..single_table_capacity {
                 table.push(AtomicPtr::null());

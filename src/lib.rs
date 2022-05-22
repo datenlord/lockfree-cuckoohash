@@ -40,7 +40,6 @@
     clippy::undocumented_unsafe_blocks, // FIXME
     clippy::missing_panics_doc, // FIXME
     clippy::shadow_reuse, // FIXME
-    clippy::default_numeric_fallback, // FIXME
     clippy::separated_literal_suffix, // FIXME
     clippy::redundant_else, // FIXME
     clippy::equatable_if_let, // FIXME
