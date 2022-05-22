@@ -458,7 +458,8 @@ where
                     }
                     Err(_) => continue,
                 }
-            } else {
+            }
+            {
                 if self.tables[0][slot_idx0.slot_idx]
                     .load(Ordering::SeqCst, guard)
                     .as_raw()
@@ -595,14 +596,14 @@ where
         match state0 {
             SlotState::Reloc => {
                 // The slot is being relocated, we help this relocation.
-                if self.help_relocate(slot_idx0, false, true, outer_map, guard) {
+                return if self.help_relocate(slot_idx0, false, true, outer_map, guard) {
                     // The relocation succeeds, we set the second returned value as `true`.
-                    return (result, true, false);
+                    (result, true, false)
                 } else {
                     // The relocation fails, because the table has been resized.
                     // We set the third returned value as `true`.
-                    return (result, false, true);
-                }
+                    (result, false, true)
+                };
             }
             SlotState::Copied => {
                 // The slot is being copied or has copied to the new map, so we try
@@ -627,11 +628,11 @@ where
         let (_, entry1, state1) = Self::unwrap_slot(slot1);
         match state1 {
             SlotState::Reloc => {
-                if self.help_relocate(slot_idx1, false, true, outer_map, guard) {
-                    return (result, true, false);
+                return if self.help_relocate(slot_idx1, false, true, outer_map, guard) {
+                    (result, true, false)
                 } else {
-                    return (result, false, true);
-                }
+                    (result, false, true)
+                };
             }
             SlotState::Copied => {
                 self.help_resize(outer_map, guard);
