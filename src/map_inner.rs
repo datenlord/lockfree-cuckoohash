@@ -720,7 +720,7 @@ where
             let dst_idx = self.get_index(1_usize.overflow_sub(src_idx.tbl_idx), src_key);
             let dst_slot = self.get_slot(dst_idx, guard);
             let (dst_count, dst_entry, dst_state) = Self::unwrap_slot(dst_slot);
-            if let SlotState::Copied = dst_state {
+            if dst_state == SlotState::Copied {
                 let new_slot_without_mark = src_slot.with_lower_u2(SlotState::NullOrKey.into_u8());
                 self.tables[src_idx.tbl_idx][src_idx.slot_idx]
                     .compare_and_set(src_slot, new_slot_without_mark, Ordering::SeqCst, guard)
@@ -947,7 +947,7 @@ where
                     slot = self.get_slot(slot_idx, guard);
                 }
                 let (_, entry, state) = Self::unwrap_slot(slot);
-                if let SlotState::Copied = state {
+                if state == SlotState::Copied {
                     self.help_resize(outer_map, guard);
                     return RelocateResult::Resized;
                 }
@@ -959,7 +959,7 @@ where
                     let next_slot_idx = self.get_index(1_usize.overflow_sub(slot_idx.tbl_idx), key);
                     let next_slot = self.get_slot(next_slot_idx, guard);
                     let (_, next_entry, next_state) = Self::unwrap_slot(next_slot);
-                    if let SlotState::Copied = next_state {
+                    if next_state == SlotState::Copied {
                         self.help_resize(outer_map, guard);
                         return RelocateResult::Resized;
                     }
@@ -1001,7 +1001,7 @@ where
                         src_slot = self.get_slot(src_idx, guard);
                     }
                     let (_, entry, state) = Self::unwrap_slot(src_slot);
-                    if let SlotState::Copied = state {
+                    if state == SlotState::Copied {
                         self.help_resize(outer_map, guard);
                         return RelocateResult::Resized;
                     }
@@ -1009,7 +1009,7 @@ where
                         let dst_idx =
                             self.get_index(1_usize.overflow_sub(src_idx.tbl_idx), &pair.key);
                         let (_, dst_entry, dst_state) = self.get_entry(dst_idx, guard);
-                        if let SlotState::Copied = dst_state {
+                        if dst_state == SlotState::Copied {
                             self.help_resize(outer_map, guard);
                             return RelocateResult::Resized;
                         }

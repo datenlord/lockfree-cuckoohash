@@ -41,7 +41,6 @@
     clippy::undocumented_unsafe_blocks, // FIXME
     clippy::missing_panics_doc, // FIXME
     clippy::shadow_reuse, // FIXME
-    clippy::equatable_if_let, // FIXME
     clippy::single_char_lifetime_names, // FIXME
 )]
 /// `pointer` defines atomic pointers which will be used for lockfree operations.
