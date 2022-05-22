@@ -1,5 +1,3 @@
-#![allow(clippy::bool_assert_comparison)] // FIXME
-
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
 use rand::Rng;
 use std::collections::HashMap;
@@ -133,7 +131,7 @@ fn test_multi_thread() {
                     let rnd_idx: usize = rng.gen_range(0..warmup_entries.len());
                     let warmup_entry = &warmup_entries[rnd_idx];
                     let res = cuckoo_map.get(&warmup_entry.0, &guard);
-                    assert_eq!(res.is_some(), true);
+                    assert!(res.is_some());
                     assert_eq!(*res.unwrap(), warmup_entry.1);
                 }
                 let insert_pair = &new_insert_entries[entry_idx];
