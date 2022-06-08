@@ -35,8 +35,13 @@
     clippy::blanket_clippy_restriction_lints, // allow clippy::restriction
     clippy::panic, // allow debug_assert, panic in production code
     clippy::implicit_return, // actually omitting the return keyword is idiomatic Rust code
+    clippy::separated_literal_suffix, // conflicts with clippy::unseparated_literal_suffix
 )]
-
+#![allow(
+    clippy::undocumented_unsafe_blocks, // FIXME
+    clippy::missing_panics_doc, // FIXME
+    clippy::single_char_lifetime_names, // FIXME
+)]
 /// `pointer` defines atomic pointers which will be used for lockfree operations.
 mod pointer;
 

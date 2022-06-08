@@ -1,4 +1,5 @@
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+use std::ops::Not;
 use std::sync::Arc;
 
 fn simple_read_write_example() {
@@ -16,8 +17,8 @@ fn simple_read_write_example() {
     let key = 1;
     let value = "value";
     // The returned value indicates whether the map had the key before this insertion.
-    assert_eq!(map.insert(key, value), false);
-    assert_eq!(map.insert(key, "value2"), true);
+    assert!(map.insert(key, value).not());
+    assert!(map.insert(key, "value2"));
     // If you want to get the replaced value, try `insert_with_guard`.
     assert_eq!(map.insert_with_guard(key, value, &guard), Some(&"value2"));
 
@@ -27,9 +28,9 @@ fn simple_read_write_example() {
 
     // Remove a key-value pair.
     // `remove` returns `false` if the map does not have the key.
-    assert_eq!(map.remove(&2), false);
-    assert_eq!(map.remove(&key), true);
-    assert_eq!(map.remove(&key), false);
+    assert!(map.remove(&2).not());
+    assert!(map.remove(&key));
+    assert!(map.remove(&key).not());
 
     // If you want to get the removed value, use `remove_with_guard` instead.
     map.insert(key, value);
